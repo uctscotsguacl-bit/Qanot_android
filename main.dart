@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'security/pin_security.dart';
 
 void main() => runApp(const QanotApp());
 
@@ -46,7 +47,7 @@ class QanotApp extends StatelessWidget {
           centerTitle: false,
         ),
       ),
-      home: const MainScreen(),
+      home: const PinSecurityGate(child: MainScreen()),
     );
   }
 }
@@ -364,7 +365,7 @@ class _MainScreenState extends State<MainScreen> {
       const SizedBox(height: 12),
       ProfileRow(icon: Icons.sim_card_outlined, title: 'Raqamlarim', onTap: showAddNumber),
       ProfileRow(icon: Icons.history, title: 'To‘lovlar tarixi', onTap: () => info('To‘lovlar tarixi backend ulangandan keyin ishlaydi.')),
-      ProfileRow(icon: Icons.security_outlined, title: 'Xavfsizlik', onTap: () => info('SMS tasdiqlash va akkaunt himoyasi keyingi bosqichda qo‘shiladi.')),
+      ProfileRow(icon: Icons.security_outlined, title: 'Xavfsizlik', onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PinSettingsScreen()))),
       ProfileRow(icon: Icons.support_agent, title: 'Yordam markazi', onTap: () => info('Yordam markazi keyingi versiyada qo‘shiladi.')),
       const SizedBox(height: 16),
       const PrototypeNote(),

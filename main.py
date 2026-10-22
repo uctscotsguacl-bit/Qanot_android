@@ -1,17 +1,22 @@
-"""QANOT backend integration scaffold.
+"""QANOT backend integration scaffold with account credential verification.
 
-This service intentionally returns HTTP 503 for operator, SMS and payment actions
-until authorized provider credentials and adapters are configured. It never invents
-balances, tariff prices, SMS delivery, or payment success.
+Operator, SMS and payment actions remain disabled until official providers are configured.
+Account passwords are hashed server-side; this demo account flow does not verify email ownership.
+For production, deploy behind HTTPS and add email verification, rate limiting and monitoring.
 """
 from typing import Literal
+import hashlib
+import hmac
 import os
 import re
-from fastapi import FastAPI, HTTPException
+import secrets
+import sqlite3
+from pathlib import Path
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 
-app = FastAPI(title="QANOT API", version="0.1.0")
+app = FastAPI(title="QANOT API", version="0.2.0")
 
 allowed_origins = [x.strip() for x in os.getenv("QANOT_ALLOWED_ORIGINS", "*").split(",") if x.strip()]
 app.add_middleware(
@@ -22,8 +27,14 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization", "Idempotency-Key"],
 )
 
+DB_PATH = Path(os.getenv("QANOT_DB_PATH", "qanot.sqlite3"))
+PASSWORD_ITERATIONS = 310_000
 OPERATORS = ["Beeline", "Ucell", "UzMobile", "Mobiuz", "Humans"]
 PROVIDERS = ["payme", "click"]
+
+class AccountRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=10, max_length=128)
 
 class BalanceRequest(BaseModel):
     phone: str = Field(min_length=9, max_length=20)
@@ -42,6 +53,31 @@ class PaymentRequest(BaseModel):
     provider: Literal["payme", "click"]
 
 
+def connect_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def init_db():
+    with connect_db() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS accounts (
+            email TEXT PRIMARY KEY,
+            password_salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+
+
+def password_hash(password: str, salt: bytes) -> bytes:
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS)
+
+
+@app.on_event("startup")
+def startup():
+    init_db()
+
+
 def validate_phone(phone: str) -> None:
     digits = re.sub(r"\D", "", phone)
     if len(digits) < 9 or len(digits) > 15:
@@ -54,9 +90,10 @@ def not_configured(feature: str) -> None:
         detail=f"{feature} hali rasmiy provayder bilan sozlanmagan. Haqiqiy ma'lumot qaytarilmadi.",
     )
 
+
 @app.get("/")
 def root():
-    return {"app": "QANOT", "version": "0.1.0", "status": "setup_required"}
+    return {"app": "QANOT", "version": "0.2.0", "status": "setup_required"}
 
 @app.get("/health")
 def health():
@@ -68,8 +105,38 @@ def operators():
 
 @app.get("/tariffs")
 def tariffs():
-    # Empty until approved, current tariff data source is configured.
     return {"items": [], "verified": False, "message": "Tarif ma'lumotlari manbasi hali ulanmagan."}
+
+@app.post("/auth/account/register")
+def register_account(data: AccountRequest):
+    email = str(data.email).strip().lower()
+    salt = secrets.token_bytes(16)
+    digest = password_hash(data.password, salt)
+    try:
+        with connect_db() as conn:
+            conn.execute(
+                "INSERT INTO accounts(email, password_salt, password_hash) VALUES(?,?,?)",
+                (email, salt.hex(), digest.hex()),
+            )
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Bu email bilan akkaunt mavjud. Mavjud akkauntga kiring.")
+    return {"ok": True, "email": email}
+
+@app.post("/auth/account/verify")
+def verify_account(data: AccountRequest):
+    email = str(data.email).strip().lower()
+    with connect_db() as conn:
+        row = conn.execute(
+            "SELECT password_salt, password_hash FROM accounts WHERE email=?", (email,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=401, detail="Email yoki parol noto‘g‘ri.")
+    salt = bytes.fromhex(row[0])
+    expected = bytes.fromhex(row[1])
+    actual = password_hash(data.password, salt)
+    if not hmac.compare_digest(actual, expected):
+        raise HTTPException(status_code=401, detail="Email yoki parol noto‘g‘ri.")
+    return {"ok": True, "email": email, "verified": True}
 
 @app.post("/balance")
 def balance(data: BalanceRequest):
@@ -95,5 +162,4 @@ def create_payment(data: PaymentRequest):
 
 @app.get("/transactions")
 def transactions():
-    # This endpoint must later require an authenticated user token.
     return {"items": [], "configured": False, "message": "Avtorizatsiya va tranzaksiya bazasi sozlanmagan."}
